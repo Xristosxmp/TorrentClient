@@ -1,5 +1,9 @@
 package com.app.TorrentClient;
 
+import org.libtorrent4j.SessionManager;
+import org.libtorrent4j.Sha1Hash;
+import org.libtorrent4j.TorrentHandle;
+
 import javax.swing.*;
 import javax.swing.border.Border;
 import javax.swing.border.CompoundBorder;
@@ -13,11 +17,18 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 
 public class App extends JFrame {
 
     private JPanel center_panel;
+    private JTable table;
+    static private App.CustomTableModel tableModel;
+    private SessionManager main_session_manager;
+
+
+    static HashMap<Sha1Hash,Torrent> hash_map_torrent = new HashMap<>();
 
     App(){
         init();
@@ -34,6 +45,7 @@ public class App extends JFrame {
         header.setLayout(new FlowLayout(FlowLayout.LEFT, 10, 11));
         JButton addButton = add_magnet_button(this);
         header.add(addButton);
+        resume_pause_torrent(header);
         return header;
     }
     private void init_center_panel(){
@@ -44,9 +56,9 @@ public class App extends JFrame {
         body.setBackground(Color.PINK);
         body.setBorder(BorderFactory.createMatteBorder(1, 0, 1, 0, Color.BLACK));
         body.setLayout(new BorderLayout()); // Ensures components fill the entire area
-        App.CustomTableModel tableModel = new App.CustomTableModel();
+        tableModel = new App.CustomTableModel();
         TableModelContainer tableModelContainer = TableModelContainer.getInstance(tableModel);
-        JTable table = new JTable(tableModel);
+        table = new JTable(tableModel);
         table.setFillsViewportHeight(true);
         JScrollPane scrollPane = new JScrollPane(table);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -62,7 +74,7 @@ public class App extends JFrame {
                     int modelRow = table.convertRowIndexToModel(selectedRow);
                     CustomTableModel model = (CustomTableModel) table.getModel();
                     Object uniqueId = model.getRowId(modelRow);
-                    System.out.println("Selected Row ID: " + uniqueId);
+                    System.out.println("Selected Row " +  selectedRow +" ID: " + uniqueId);
                 }
             }
         });
@@ -138,14 +150,12 @@ public class App extends JFrame {
                 dialog.setLayout(new BorderLayout());
                 dialog.setLocationRelativeTo(frame);
 
-// Header panel with padding
                 JPanel headerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
                 headerPanel.setBorder(new EmptyBorder(0, 10, 0, 10)); // Add padding
                 JLabel headerLabel = new JLabel("Add torrent links");
                 headerPanel.add(headerLabel);
                 dialog.add(headerPanel, BorderLayout.NORTH);
 
-// Center panel with JTextArea and padding
                 JPanel centerPanel = new JPanel(new BorderLayout());
                 centerPanel.setBorder(new EmptyBorder(0, 10, 0, 10)); // Add padding
                 JTextArea textArea = new JTextArea();
@@ -153,7 +163,6 @@ public class App extends JFrame {
                 centerPanel.add(textArea, BorderLayout.CENTER);
                 dialog.add(centerPanel, BorderLayout.CENTER);
 
-// Footer panel with buttons and padding
                 JPanel footerPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
                 footerPanel.setBorder(new EmptyBorder(10, 10, 10, 10)); // Add padding
 
@@ -199,7 +208,7 @@ public class App extends JFrame {
                 okButton.addActionListener(evt -> {
                     String hash = textArea.getText().toString();
                     //87a2d22eb879593b48b3d3ee6828f56e2bfb4415
-                    new Torrent(hash);
+                    hash_map_torrent.put(Sha1Hash.parseHex(hash),new Torrent(hash));
                     dialog.dispose();
                 });
 
@@ -209,6 +218,50 @@ public class App extends JFrame {
         });
 
         return add;
+    }
+
+    private void resume_pause_torrent(JPanel header){
+        RoundButton resume_button = new RoundButton("Resume");
+        RoundButton pause_button = new RoundButton("Pause");
+
+        pause_button.setBorderPainted(false);
+        pause_button.setContentAreaFilled(false);
+        pause_button.setFocusPainted(false);
+        pause_button.setOpaque(false);
+
+        resume_button.setBorderPainted(false);
+        resume_button.setContentAreaFilled(false);
+        resume_button.setFocusPainted(false);
+        resume_button.setOpaque(false);
+
+        resume_button.setPreferredSize(new Dimension(100,25));
+        pause_button.setPreferredSize(new Dimension(100,25));
+        resume_button.addActionListener(e -> {
+            int selectedRow = table.getSelectedRow();
+            if (selectedRow != -1) { // Ensure a row is selected
+                Sha1Hash hash = Sha1Hash.parseHex(tableModel.getValueAt(selectedRow,0).toString());
+                TorrentHandle th = hash_map_torrent.get(hash).torrent_handle;
+                if (th != null) {
+                    th.resume();
+                    System.out.println("Resumed torrent: " + th.torrentFile().name());
+                }
+            }
+        });
+
+        pause_button.addActionListener(e -> {
+            int selectedRow = table.getSelectedRow();
+            if (selectedRow != -1) { // Ensure a row is selected
+                Sha1Hash hash = Sha1Hash.parseHex(tableModel.getValueAt(selectedRow,0).toString());
+                TorrentHandle th = hash_map_torrent.get(hash).torrent_handle;
+                if (th != null) {
+                    th.pause();
+                    System.out.println("Resumed torrent: " + th.torrentFile().name());
+                }
+            }
+        });
+
+        header.add(resume_button);
+        header.add(pause_button);
     }
 
 
@@ -222,7 +275,15 @@ public class App extends JFrame {
             data = new ArrayList<>();
             for (int i = 0; i < torrents.size(); i++) {
                 Torrent torrent = torrents.get(i);
-                new Torrent(torrent.name,torrent.size,torrent.sha1hash);
+
+                synchronized (hash_map_torrent) {
+
+                    addRow(new Object[]{torrent.sha1hash, torrent.name, torrent.size, null, null, null, null, null});
+                    hash_map_torrent.put(Sha1Hash.parseHex(torrent.sha1hash),
+                            new Torrent(torrent.name, torrent.size, torrent.sha1hash));
+                }
+
+
             }
         }
 
@@ -236,8 +297,7 @@ public class App extends JFrame {
             fireTableRowsDeleted(rowIndex, rowIndex);
         }
 
-        @Override
-        public void setValueAt(Object aValue, int rowIndex, int columnIndex) {
+        @Override public void setValueAt(Object aValue, int rowIndex, int columnIndex) {
             if (rowIndex < 0 || rowIndex >= data.size() || columnIndex < 0 || columnIndex >= getColumnCount()) {
                 return; // Validate the indices
             }
@@ -245,23 +305,19 @@ public class App extends JFrame {
             fireTableCellUpdated(rowIndex, columnIndex); // Notify the table of the update
         }
 
-        @Override
-        public int getRowCount() {
+        @Override public int getRowCount() {
             return data.size(); // Return the size of the list
         }
 
-        @Override
-        public int getColumnCount() {
+        @Override public int getColumnCount() {
             return columnNames.length;
         }
 
-        @Override
-        public String getColumnName(int column) {
+        @Override public String getColumnName(int column) {
             return columnNames[column];
         }
 
-        @Override
-        public Object getValueAt(int rowIndex, int columnIndex) {
+        @Override public Object getValueAt(int rowIndex, int columnIndex) {
             Object value = data.get(rowIndex)[columnIndex];
             if (value == null || (value instanceof String && ((String) value).isEmpty())) {
                 return "";
@@ -272,8 +328,6 @@ public class App extends JFrame {
         public Object getRowId(int rowIndex) {
             return data.get(rowIndex)[0]; // Assuming the first column contains the ID
         }
-
-
     }
 
 

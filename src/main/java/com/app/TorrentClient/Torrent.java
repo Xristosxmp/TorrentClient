@@ -23,8 +23,8 @@ public class Torrent implements Serializable {
 
     // Transient fields to avoid serialization issues
     private transient SessionManager session;
-    private transient TorrentHandle torrent_handle;
-    private transient int current_row;
+    public transient TorrentHandle torrent_handle;
+    private int current_row;
     private transient App.CustomTableModel tableModel;
 
     public Torrent(String sha1hash) {
@@ -36,7 +36,8 @@ public class Torrent implements Serializable {
         this.name = name;
         this.size = size;
         this.sha1hash = sha1hash;
-        download();
+        //append(this.name, this.size, this.sha1hash);
+        download(true);
     }
 
     public void save() throws IOException {
@@ -55,13 +56,44 @@ public class Torrent implements Serializable {
                 TableModelContainer tableModelContainer = TableModelContainer.getInstance(null); // Null since it’s already initialized
                 tableModel = tableModelContainer.getTableModel();
                 tableModel.addRow(new Object[]{sha1hash, name, size, null, null, null, null, null});
-                current_row = tableModel.getRowCount() - 1;
+                synchronized (this) {
+                    current_row = tableModel.getRowCount() - 1;
+                }
                 return null;
             }
         };
 
         worker.execute();
     }
+
+    private void download(boolean hasValues) {
+        System.out.println(this.sha1hash);
+        String hash = "magnet:?xt=urn:btih:" + this.sha1hash;
+        new Thread(() -> {
+            try {
+                session = new SessionManager();
+                session.start();
+                session.addListener(new TorrentAlert());
+                try { waitForNodesInDHT(session);} catch (InterruptedException e) {return;}
+                File output_folder = new File(System.getProperty("user.home"), "Downloads");
+                byte[] data = session.fetchMagnet(hash, 10, output_folder);
+                TorrentInfo ti = TorrentInfo.bdecode(data);
+                new Thread(() -> {
+                    try {save();} catch (IOException e) {e.printStackTrace();}
+                }).start();
+                Priority[] priorities = Priority.array(Priority.DEFAULT, ti.numFiles());
+                session.download(ti, output_folder, null, priorities, null, TorrentFlags.SEQUENTIAL_DOWNLOAD);
+                torrent_handle = session.find(ti.infoHash());
+                torrent_handle.unsetFlags(TorrentFlags.AUTO_MANAGED);
+                Thread torrentThread = new Thread(new TorrentThread());
+                torrentThread.start();
+            } catch (IllegalArgumentException e) {
+                e.printStackTrace();
+                removeRowOnError();
+            }
+        }).start();
+    }
+
 
     private void download() {
         System.out.println(this.sha1hash);
@@ -77,17 +109,16 @@ public class Torrent implements Serializable {
                     return;
                 }
                 File output_folder = new File(System.getProperty("user.home"), "Downloads");
-                byte[] data = session.fetchMagnet(hash, 10, output_folder);
-                TorrentInfo ti = TorrentInfo.bdecode(data);
+                byte[] data = session.fetchMagnet(hash, 30, output_folder);
+                if(data == null){
+                    session.stop();
+                }
 
+                TorrentInfo ti = TorrentInfo.bdecode(data);
                 this.size = get_size(ti.totalSize());
                 this.name = ti.name();
                 new Thread(() -> {
-                    try {
-                        save();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
+                    try {save();} catch (IOException e) {e.printStackTrace();}
                 }).start();
                 append(this.name, this.size, this.sha1hash);
 
@@ -129,7 +160,7 @@ public class Torrent implements Serializable {
         worker.execute();
     }
 
-    private static void waitForNodesInDHT(final SessionManager s) throws InterruptedException {
+    private void waitForNodesInDHT(final SessionManager s) throws InterruptedException {
         final CountDownLatch signal = new CountDownLatch(1);
         final Timer timer = new Timer();
         timer.schedule(new TimerTask() {
@@ -143,9 +174,10 @@ public class Torrent implements Serializable {
             }
         }, 0, 1000);
 
-        boolean r = signal.await(10, TimeUnit.SECONDS);
+        boolean r = signal.await(40, TimeUnit.SECONDS);
         if (!r) {
-            waitForNodesInDHT(s);
+            System.out.println("DHT bootstrap timeout");
+            timer.cancel();
         }
     }
 
@@ -183,10 +215,11 @@ public class Torrent implements Serializable {
                     if (tableModel != null) {
                         if (torrent_handle != null) {
                             if (torrent_handle.isValid()) {
-
+                                System.out.println(sha1hash + " " + current_row);
                                 SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
                                     @Override
                                     protected Void doInBackground() {
+                                        System.out.println(sha1hash + " " + current_row);
                                         double progress = torrent_handle.status().progress() * 100;
                                         int peers = torrent_handle.status().numPeers();
                                         int seeds = torrent_handle.status().numSeeds();

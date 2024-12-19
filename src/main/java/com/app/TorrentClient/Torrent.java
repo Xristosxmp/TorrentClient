@@ -17,17 +17,26 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 public class Torrent implements Serializable {
-    public String name,size,sha1hash;
-    public Torrent(String sha1hash) {this.sha1hash = sha1hash;}
+    private static final long serialVersionUID = 1L;
+
+    public String name, size, sha1hash;
+
+    // Transient fields to avoid serialization issues
+    private transient SessionManager session;
+    private transient TorrentHandle torrent_handle;
+    private transient int current_row;
+    private transient App.CustomTableModel tableModel;
+
+    public Torrent(String sha1hash) {
+        this.sha1hash = sha1hash;
+        download();
+    }
 
     public Torrent(String name, String size, String sha1hash) {
         this.name = name;
         this.size = size;
         this.sha1hash = sha1hash;
         download();
-        try {save();} catch (IOException e) {
-            e.printStackTrace();
-        }
     }
 
     public void save() throws IOException {
@@ -39,14 +48,14 @@ public class Torrent implements Serializable {
         }
     }
 
-
-    private void append(String name,String size,String sha1hash) {
+    private void append(String name, String size, String sha1hash) {
         SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
             @Override
             protected Void doInBackground() {
                 TableModelContainer tableModelContainer = TableModelContainer.getInstance(null); // Null since it’s already initialized
-                App.CustomTableModel tableModel = tableModelContainer.getTableModel();
-                tableModel.addRow(new Object[] {sha1hash,name,size,null,null,null,null,null});
+                tableModel = tableModelContainer.getTableModel();
+                tableModel.addRow(new Object[]{sha1hash, name, size, null, null, null, null, null});
+                current_row = tableModel.getRowCount() - 1;
                 return null;
             }
         };
@@ -54,29 +63,40 @@ public class Torrent implements Serializable {
         worker.execute();
     }
 
-
-
-    public SessionManager session;
-    public TorrentHandle torrent_handle;
-    private void download(){
+    private void download() {
         System.out.println(this.sha1hash);
-        String hash = "magnet:?xt=urn:btih:"+this.sha1hash;
-        new Thread(() ->{
+        String hash = "magnet:?xt=urn:btih:" + this.sha1hash;
+        new Thread(() -> {
             try {
-
                 session = new SessionManager();
                 session.start();
                 session.addListener(new TorrentAlert());
-                try {waitForNodesInDHT(session);} catch (InterruptedException e) {return;}
+                try {
+                    waitForNodesInDHT(session);
+                } catch (InterruptedException e) {
+                    return;
+                }
                 File output_folder = new File(System.getProperty("user.home"), "Downloads");
                 byte[] data = session.fetchMagnet(hash, 10, output_folder);
                 TorrentInfo ti = TorrentInfo.bdecode(data);
 
-                append(ti.name(),get_size(ti.totalSize()),this.sha1hash);
+                this.size = get_size(ti.totalSize());
+                this.name = ti.name();
+                new Thread(() -> {
+                    try {
+                        save();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }).start();
+                append(this.name, this.size, this.sha1hash);
+
                 Priority[] priorities = Priority.array(Priority.DEFAULT, ti.numFiles());
                 session.download(ti, output_folder, null, priorities, null, TorrentFlags.SEQUENTIAL_DOWNLOAD);
                 torrent_handle = session.find(ti.infoHash());
                 torrent_handle.unsetFlags(TorrentFlags.AUTO_MANAGED);
+                Thread torrentThread = new Thread(new TorrentThread());
+                torrentThread.start();
             } catch (IllegalArgumentException e) {
                 e.printStackTrace();
                 removeRowOnError();
@@ -111,9 +131,10 @@ public class Torrent implements Serializable {
 
     private static void waitForNodesInDHT(final SessionManager s) throws InterruptedException {
         final CountDownLatch signal = new CountDownLatch(1);
-        final java.util.Timer timer = new Timer();
+        final Timer timer = new Timer();
         timer.schedule(new TimerTask() {
-            @Override public void run() {
+            @Override
+            public void run() {
                 long nodes = s.stats().dhtNodes();
                 if (nodes >= 10) {
                     signal.countDown();
@@ -122,25 +143,100 @@ public class Torrent implements Serializable {
             }
         }, 0, 1000);
 
-
         boolean r = signal.await(10, TimeUnit.SECONDS);
         if (!r) {
             waitForNodesInDHT(s);
         }
     }
 
-    private class TorrentAlert implements AlertListener{
-        @Override public int[] types() {return null;}
-        @Override public void alert(Alert<?> alert) {
-            switch (alert.type()) {
-                case ADD_TORRENT: ((AddTorrentAlert) alert).handle().resume(); break;
-                case PIECE_FINISHED: break;
-                case TORRENT_FINISHED: ((TorrentFinishedAlert) alert).handle().pause();   break;
-                case METADATA_RECEIVED:
-                    System.out.println("metadata received (" + sha1hash + ")"); break;
-                default: break;
+    public static String calculateETA(TorrentHandle torrentHandle) {
+        long totalSize = torrentHandle.torrentFile().totalSize();
+        double progress = torrentHandle.status().progress();
+        long remainingSize = (long) (totalSize * (1 - progress));
+        int downloadSpeed = torrentHandle.status().downloadRate();
+        if (downloadSpeed <= 0) return "Unknown";
+        long etaInSeconds = remainingSize / downloadSpeed;
+        return formatTime(etaInSeconds);
+    }
+
+    public static String formatTime(long seconds) {
+        long hours = seconds / 3600;
+        long minutes = (seconds % 3600) / 60;
+        long secs = seconds % 60;
+        if (hours > 0) return String.format("%02d:%02d:%02d", hours, minutes, secs);
+        else return String.format("%02d:%02d", minutes, secs);
+    }
+
+
+    public static String formatSpeed(int bytesPerSecond) {
+        if (bytesPerSecond < 1024) return bytesPerSecond + " Bytes/s";
+        int exp = (int) (Math.log(bytesPerSecond) / Math.log(1024));
+        String[] units = {"Bytes/s", "KB/s", "MB/s", "GB/s", "TB/s"};
+        return String.format("%.2f %s", bytesPerSecond / Math.pow(1024, exp), units[exp]);
+    }
+
+    private class TorrentThread implements Runnable {
+        @Override
+        public void run() {
+            while (true) {
+                try {
+                    if (tableModel != null) {
+                        if (torrent_handle != null) {
+                            if (torrent_handle.isValid()) {
+
+                                SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
+                                    @Override
+                                    protected Void doInBackground() {
+                                        double progress = torrent_handle.status().progress() * 100;
+                                        int peers = torrent_handle.status().numPeers();
+                                        int seeds = torrent_handle.status().numSeeds();
+                                        String down_speed = formatSpeed(torrent_handle.status().downloadRate());
+                                        String eta = calculateETA(torrent_handle);
+                                        tableModel.setValueAt(progress, current_row, 3);
+                                        tableModel.setValueAt(seeds, current_row, 4);
+                                        tableModel.setValueAt(peers, current_row, 5);
+                                        tableModel.setValueAt(down_speed, current_row, 6);
+                                        tableModel.setValueAt(eta, current_row, 7);
+                                        return null;
+                                    }
+                                };
+
+                                worker.execute();
+
+
+                            }
+                        }
+                    }
+                    // Sleep for 1 second before running again
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    System.out.println("TorrentThread interrupted.");
+                    break; // Exit the loop if interrupted
+                }
             }
         }
     }
 
+
+
+    private class TorrentAlert implements AlertListener {
+        @Override public int[] types() {return null;}
+
+        @Override
+        public void alert(Alert<?> alert) {
+            switch (alert.type()) {
+                case ADD_TORRENT:
+                    ((AddTorrentAlert) alert).handle().resume();
+                    break;
+                case TORRENT_FINISHED:
+                    ((TorrentFinishedAlert) alert).handle().pause();
+                    break;
+                case METADATA_RECEIVED:
+                    System.out.println("metadata received (" + sha1hash + ")");
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
 }

@@ -5,6 +5,7 @@ import javax.swing.border.Border;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
 import javax.swing.table.AbstractTableModel;
+import javax.swing.table.DefaultTableCellRenderer;
 import java.awt.*;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
@@ -31,7 +32,7 @@ public class App extends JFrame {
         JPanel header = new JPanel();
         header.setPreferredSize(new Dimension(center_panel.getWidth(), 50));
         header.setLayout(new FlowLayout(FlowLayout.LEFT, 10, 11));
-        JButton addButton = add_magnet_button();
+        JButton addButton = add_magnet_button(this);
         header.add(addButton);
         return header;
     }
@@ -65,6 +66,14 @@ public class App extends JFrame {
                 }
             }
         });
+
+        table.getColumnModel().getColumn(3).setCellRenderer(new DefaultTableCellRenderer() {
+            @Override protected void setValue(Object value) {
+                if (value instanceof Double) setText(String.format("%.2f%%", (Double) value));
+                else super.setValue(value);
+            }
+        });
+
         body.add(scrollPane, BorderLayout.CENTER);
 
 
@@ -99,35 +108,105 @@ public class App extends JFrame {
         add(wrapper, BorderLayout.CENTER);
     }
 
-    private JButton add_magnet_button() {
-        JButton add = new RoundButton("Add Magnet");
+    private static JButton add_magnet_button(JFrame frame) {
+        RoundButton add = new RoundButton("Add Magnet");
         add.setPreferredSize(new Dimension(100,25));
 
 
         add.addMouseListener(new MouseAdapter() {
             @Override public void mouseEntered(MouseEvent e) {
-                if (add instanceof RoundButton) {
-                    RoundButton roundButton = (RoundButton) add;
-                    roundButton.set_new_border(new Color(0x3e98de));
-                    roundButton.set_new_background(new Color(0xb6d3ea));
-
-                }
+                    add.set_new_border(new Color(0x3e98de));
+                    add.set_new_background(new Color(0xb6d3ea));
             }
-
-            @Override
-            public void mouseExited(MouseEvent e) {
-                if (add instanceof RoundButton) {
-                    RoundButton roundButton = (RoundButton) add;
-                    roundButton.set_new_border(Color.BLACK);
-                    roundButton.set_new_background(Color.WHITE);
-
-                }
+            @Override public void mouseExited(MouseEvent e) {
+                    add.set_new_border(Color.BLACK);
+                    add.set_new_background(Color.WHITE);
             }
         });
         add.setBorderPainted(false);
         add.setContentAreaFilled(false);
         add.setFocusPainted(false);
         add.setOpaque(false);
+
+        add.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                super.mouseClicked(e);
+                JDialog dialog = new JDialog(frame, "Download from torrent hashes", true);
+                dialog.setSize(500, 480);
+                dialog.setMinimumSize(new Dimension(500, 240));
+                dialog.setLayout(new BorderLayout());
+                dialog.setLocationRelativeTo(frame);
+
+// Header panel with padding
+                JPanel headerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+                headerPanel.setBorder(new EmptyBorder(0, 10, 0, 10)); // Add padding
+                JLabel headerLabel = new JLabel("Add torrent links");
+                headerPanel.add(headerLabel);
+                dialog.add(headerPanel, BorderLayout.NORTH);
+
+// Center panel with JTextArea and padding
+                JPanel centerPanel = new JPanel(new BorderLayout());
+                centerPanel.setBorder(new EmptyBorder(0, 10, 0, 10)); // Add padding
+                JTextArea textArea = new JTextArea();
+                textArea.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.BLACK));
+                centerPanel.add(textArea, BorderLayout.CENTER);
+                dialog.add(centerPanel, BorderLayout.CENTER);
+
+// Footer panel with buttons and padding
+                JPanel footerPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+                footerPanel.setBorder(new EmptyBorder(10, 10, 10, 10)); // Add padding
+
+                RoundButton okButton = new RoundButton("Download");
+                okButton.setPreferredSize(new Dimension(110,25));
+                okButton.addMouseListener(new MouseAdapter() {
+                    @Override public void mouseEntered(MouseEvent e) {
+                        okButton.set_new_border(new Color(0x3e98de));
+                        okButton.set_new_background(new Color(0xb6d3ea));
+                    }
+                    @Override public void mouseExited(MouseEvent e) {
+                        okButton.set_new_border(Color.BLACK);
+                        okButton.set_new_background(Color.WHITE);
+                    }
+                });
+                okButton.setBorderPainted(false);
+                okButton.setContentAreaFilled(false);
+                okButton.setFocusPainted(false);
+                okButton.setOpaque(false);
+
+                RoundButton cancelButton = new RoundButton("Cancel");
+                cancelButton.setPreferredSize(new Dimension(100,25));
+                cancelButton.addMouseListener(new MouseAdapter() {
+                    @Override public void mouseEntered(MouseEvent e) {
+                        cancelButton.set_new_border(new Color(0x3e98de));
+                        cancelButton.set_new_background(new Color(0xb6d3ea));
+                    }
+                    @Override public void mouseExited(MouseEvent e) {
+                        cancelButton.set_new_border(Color.BLACK);
+                        cancelButton.set_new_background(Color.WHITE);
+                    }
+                });
+                cancelButton.setBorderPainted(false);
+                cancelButton.setContentAreaFilled(false);
+                cancelButton.setFocusPainted(false);
+                cancelButton.setOpaque(false);
+
+                footerPanel.add(okButton);
+                footerPanel.add(cancelButton);
+                dialog.add(footerPanel, BorderLayout.SOUTH);
+
+                // Torrent Download
+                okButton.addActionListener(evt -> {
+                    String hash = textArea.getText().toString();
+                    //87a2d22eb879593b48b3d3ee6828f56e2bfb4415
+                    new Torrent(hash);
+                    dialog.dispose();
+                });
+
+                cancelButton.addActionListener(evt -> {dialog.dispose();});
+                dialog.setVisible(true);
+            }
+        });
 
         return add;
     }
@@ -158,6 +237,15 @@ public class App extends JFrame {
         }
 
         @Override
+        public void setValueAt(Object aValue, int rowIndex, int columnIndex) {
+            if (rowIndex < 0 || rowIndex >= data.size() || columnIndex < 0 || columnIndex >= getColumnCount()) {
+                return; // Validate the indices
+            }
+            data.get(rowIndex)[columnIndex] = aValue; // Update the value in the model
+            fireTableCellUpdated(rowIndex, columnIndex); // Notify the table of the update
+        }
+
+        @Override
         public int getRowCount() {
             return data.size(); // Return the size of the list
         }
@@ -184,6 +272,8 @@ public class App extends JFrame {
         public Object getRowId(int rowIndex) {
             return data.get(rowIndex)[0]; // Assuming the first column contains the ID
         }
+
+
     }
 
 
